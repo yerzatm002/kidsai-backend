@@ -1,6 +1,7 @@
 const prisma = require('../utils/prisma');
 const { resolveLang } = require('../utils/lang');
 const { calcLevel } = require('../utils/level');
+const userService = require('../services/user.service');
 
 exports.getMyBadges = async (req, res, next) => {
   try {
@@ -46,6 +47,31 @@ exports.getMyStats = async (req, res, next) => {
       : stats;
 
     res.json({ stats: updated });
+  } catch (err) {
+    next(err);
+  }
+};
+
+exports.getMe = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+
+    const user = await userService.getUserById(userId);
+
+    if (!user) {
+      return res.status(404).json({
+        error: 'User not found'
+      });
+    }
+
+    res.json({
+      id: user.id,
+      email: user.email,
+      fullName: user.fullName,
+      role: user.role,
+      grade: user.grade
+    });
+
   } catch (err) {
     next(err);
   }
