@@ -170,8 +170,8 @@ exports.createQuestions = async (req, res, next) => {
       data: body.items.map(q => ({
         testId,
         type: q.type,
-        promptKz: q.promptKz,
-        promptRu: q.promptRu,
+        questionKz: q.promptKz,
+        questionRu: q.promptRu,
         options: q.options,   // Json
         correct: q.correct,   // Json
         points: q.points,
