@@ -174,7 +174,7 @@ exports.createQuestions = async (req, res, next) => {
         questionRu: q.promptRu,
         options: q.options,   // Json
         correctAnswer: q.correct,   // Json
-        points: q.points,
+        // points: q.points,
       })),
     });
 
