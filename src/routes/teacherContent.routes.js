@@ -28,7 +28,7 @@ router.patch('/api/teacher/tasks/:id', teacher.updateTask);
  * Tests + Questions
  */
 router.post('/api/teacher/topics/:id/test', teacher.createTestForTopic);
-router.post('/api/teacher/tests/:id/questions', teacher.createQuestion);
+router.post('/api/teacher/tests/:id/questions', teacher.createQuestions);
 router.patch('/api/teacher/questions/:id', teacher.updateQuestion);
 
 module.exports = router;

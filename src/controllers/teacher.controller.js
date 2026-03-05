@@ -51,16 +51,20 @@ const createTasksSchema = z.object({
 /**
  * TEST QUESTION DTO
  */
-const questionCreateSchema = z.object({
-  type: z.enum(['SINGLE', 'MULTI']).optional(),
-  questionKz: z.string().min(1),
-  questionRu: z.string().min(1),
-  options: z.any(),        // Json
-  correctAnswer: z.any(),  // Json
-  orderIndex: z.number().int().min(0).optional(),
+const QuestionTypeEnum = z.enum(['SINGLE', 'MULTI', 'TEXT']); // если у вас только SINGLE — можно оставить z.literal('SINGLE')
+
+const questionItemSchema = z.object({
+  type: QuestionTypeEnum,
+  promptKz: z.string().min(1),
+  promptRu: z.string().min(1),
+  options: z.array(z.string()).optional().default([]),
+  correct: z.array(z.number().int()).optional().default([]),
+  points: z.number().int().min(1).default(1),
 });
 
-const questionPatchSchema = questionCreateSchema.partial();
+const createQuestionsSchema = z.object({
+  items: z.array(questionItemSchema).min(1),
+});
 
 /**
  * CONTROLLERS
@@ -152,11 +156,29 @@ exports.createTestForTopic = async (req, res, next) => {
   }
 };
 
-exports.createQuestion = async (req, res, next) => {
+exports.createQuestions = async (req, res, next) => {
   try {
-    const data = questionCreateSchema.parse(req.body);
-    const question = await service.createQuestion(req.params.id, data);
-    res.status(201).json({ question });
+    const testId = req.params.id;
+
+    const body = createQuestionsSchema.parse(req.body);
+
+    // (опционально) проверить что test существует
+    const test = await prisma.test.findUnique({ where: { id: testId }, select: { id: true } });
+    if (!test) return res.status(404).json({ error: 'Test not found' });
+
+    await prisma.testQuestion.createMany({
+      data: body.items.map(q => ({
+        testId,
+        type: q.type,
+        promptKz: q.promptKz,
+        promptRu: q.promptRu,
+        options: q.options,   // Json
+        correct: q.correct,   // Json
+        points: q.points,
+      })),
+    });
+
+    res.status(201).json({ created: body.items.length });
   } catch (err) {
     next(err);
   }
