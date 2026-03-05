@@ -21,7 +21,7 @@ router.patch('/api/teacher/lessons/:id', teacher.updateLesson);
 /**
  * Tasks
  */
-router.post('/api/teacher/topics/:id/tasks', teacher.createTaskForTopic);
+router.post('/api/teacher/topics/:id/tasks', teacher.createTasksForTopic);
 router.patch('/api/teacher/tasks/:id', teacher.updateTask);
 
 /**
