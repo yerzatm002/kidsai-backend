@@ -173,7 +173,7 @@ exports.createQuestions = async (req, res, next) => {
         questionKz: q.promptKz,
         questionRu: q.promptRu,
         options: q.options,   // Json
-        correct: q.correct,   // Json
+        correctAnswer: q.correct,   // Json
         points: q.points,
       })),
     });
