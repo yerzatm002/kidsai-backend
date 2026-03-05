@@ -1,6 +1,8 @@
 const { z } = require('zod');
 const service = require('../services/teacherContent.service');
+const prisma = require('../utils/prisma');
 
+const TaskTypeEnum = z.enum(['SIMPLE', 'DRAG_DROP', 'QA']);
 /**
  * TOPIC DTO
  */
@@ -32,16 +34,19 @@ const lessonPatchSchema = lessonCreateSchema.partial();
 /**
  * TASK DTO
  */
-const taskCreateSchema = z.object({
-  type: z.enum(['SIMPLE', 'DRAG_DROP', 'QA']),
+const taskItemSchema = z.object({
+  type: TaskTypeEnum,
   promptKz: z.string().min(1),
   promptRu: z.string().min(1),
-  payload: z.any(), // Json, структура зависит от type
-  xpReward: z.number().int().min(0).max(1000).optional(),
-  orderIndex: z.number().int().min(0).optional(),
+  payload: z.any().default({}), // можно усилить по типам позже
+  xpReward: z.number().int().min(0).default(0),
 });
 
-const taskPatchSchema = taskCreateSchema.partial();
+const createTasksSchema = z.object({
+  items: z.array(taskItemSchema).min(1),
+});
+
+
 
 /**
  * TEST QUESTION DTO
@@ -100,11 +105,29 @@ exports.updateLesson = async (req, res, next) => {
   }
 };
 
-exports.createTaskForTopic = async (req, res, next) => {
+exports.createTasksForTopic = async (req, res, next) => {
   try {
-    const data = taskCreateSchema.parse(req.body);
-    const task = await service.createTaskForTopic(req.params.id, data);
-    res.status(201).json({ task });
+    const topicId = req.params.id;
+
+    const body = createTasksSchema.parse(req.body);
+
+    // (опционально) убедиться что тема существует
+    const topic = await prisma.topic.findUnique({ where: { id: topicId }, select: { id: true } });
+    if (!topic) return res.status(404).json({ error: 'Topic not found' });
+
+    // создаём пачкой
+    await prisma.task.createMany({
+      data: body.items.map(it => ({
+        topicId,
+        type: it.type,
+        promptKz: it.promptKz,
+        promptRu: it.promptRu,
+        payload: it.payload,
+        xpReward: it.xpReward,
+      })),
+    });
+
+    res.status(201).json({ created: body.items.length });
   } catch (err) {
     next(err);
   }
