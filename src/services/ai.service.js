@@ -1,128 +1,72 @@
-const prisma = require('../utils/prisma');
-const { ai, google } = require('../utils/gemini');
-const { buildPrompt } = require('./aiPrompt.service');
-const { containsPII, redactPII } = require('../utils/pii');
-const { recordAIRequest } = require('./aiRequest.service'); // для ачивки AI_EXPLORER
+const { GoogleGenerativeAI } = require("@google/genai");
 
-function getFallback(lang) {
-  if (lang === 'kz') {
-    return [
-      'Мен қазір уақытша қолжетімсізбін. Мынадай тәсіл жасап көр:',
-      '1) Тақырыптағы негізгі ұғымды ата.',
-      '2) 1–2 сөйлеммен өз сөзіңмен түсіндір.',
-      '3) Мысал келтір.',
-    ].join('\n');
+const MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+const MAX_OUTPUT_TOKENS = Number(process.env.AI_MAX_OUTPUT_TOKENS || 300);
+
+function buildPrompt({ lang, mode, question, lessonSnippet }) {
+  const isRu = lang === "ru";
+
+  const system = isRu
+    ? "Ты доброжелательный помощник для детей. Пиши простыми словами, коротко и безопасно."
+    : "Сен балаларға арналған көмекшісің. Қарапайым, қысқа және қауіпсіз түрде жауап бер.";
+
+  let task;
+  if (mode === "explain") {
+    task = isRu
+      ? `Объясни вопрос ребёнку простыми словами: ${question}`
+      : `Сұрақты балаға қарапайым тілмен түсіндір: ${question}`;
+  } else if (mode === "hint") {
+    task = isRu
+      ? `Дай подсказку без прямого ответа: ${question}`
+      : `Дәл жауап бермей, ишара/кеңес бер: ${question}`;
+  } else {
+    // quiz
+    task = isRu
+      ? `Сделай мини-викторину (3 вопроса) по уроку и в конце попроси ответить 1/2/3: ${question}`
+      : `Сабақ бойынша 3 сұрақтан тұратын шағын викторина жаса да соңында 1/2/3 деп жауап беруін сұра: ${question}`;
   }
-  return [
-    'Я временно недоступен. Попробуй так:',
-    '1) Назови ключевое понятие темы.',
-    '2) Объясни его 1–2 предложениями своими словами.',
-    '3) Приведи пример.',
-  ].join('\n');
+
+  return `${system}
+
+Контекст урока (кратко):
+${lessonSnippet}
+
+Задание:
+${task}
+
+Правила безопасности:
+- Не проси личные данные (имя, адрес, телефон).
+- Никаких опасных инструкций.
+- Если вопрос не по уроку — мягко верни к теме.
+`;
 }
 
-async function getTopicContext(topicId, lang) {
-  // MVP: берём Topic + первый Lesson (если есть). Можно расширить под lessonId.
-  const topic = await prisma.topic.findUnique({
-    where: { id: topicId },
-    include: {
-      lessons: { orderBy: { orderIndex: 'asc' }, take: 1 },
+async function help({ topicId, lang, mode, question, lessonSnippet }) {
+  if (!process.env.GEMINI_API_KEY) {
+    return { answer: "AI временно недоступен (нет ключа).", blocked: true, fallback: true };
+  }
+
+  const client = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+  const prompt = buildPrompt({ lang, mode, question, lessonSnippet });
+
+  // В @google/genai делаем generateContent через модель
+  const model = client.getGenerativeModel({ model: MODEL });
+
+  const result = await model.generateContent({
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig: {
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
+      temperature: Number(process.env.AI_TEMPERATURE || 0.4),
     },
   });
-  if (!topic) return null;
 
-  const isRu = lang === 'ru';
-  const lesson = topic.lessons?.[0];
+  const text =
+    result?.response?.candidates?.[0]?.content?.parts?.map(p => p.text).join("") ||
+    result?.response?.text?.() ||
+    "Не удалось получить ответ.";
 
-  return {
-    topicTitle: isRu ? topic.titleRu : topic.titleKz,
-    topicDesc: isRu ? topic.descriptionRu : topic.descriptionKz,
-    lessonContext: lesson ? (isRu ? lesson.contentRu : lesson.contentKz) : '',
-  };
-}
-
-async function help({ userId, topicId, mode, lang, question }) {
-  // 1) PII check
-  if (containsPII(question)) {
-    const err = new Error(lang === 'kz'
-      ? 'Жеке деректерді (телефон/email/құжат) жібермеңіз. Сұрақты жеке дерексіз қайта жазыңыз.'
-      : 'Не отправляйте персональные данные (телефон/email/документы). Переформулируйте вопрос без них.');
-    err.statusCode = 400;
-    throw err;
-  }
-
-  // 2) контекст по теме
-  const ctx = await getTopicContext(topicId, lang);
-  if (!ctx) {
-    const err = new Error('Topic not found');
-    err.statusCode = 404;
-    throw err;
-  }
-
-  const safeQuestion = redactPII(question);
-  const prompt = buildPrompt({
-    lang,
-    mode,
-    ...ctx,
-    question: safeQuestion,
-  });
-
-  // 3) safety settings + генерация (пример передачи config показан в cookbook) :contentReference[oaicite:5]{index=5}
-  const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-  const maxOutputTokens = Number(process.env.AI_MAX_OUTPUT_TOKENS || 300);
-  const temperature = Number(process.env.AI_TEMPERATURE || 0.4);
-
-  const safetySettings = [
-    { category: google.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: google.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE },
-    { category: google.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: google.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE },
-    { category: google.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: google.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE },
-    { category: google.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: google.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE },
-    // опционально:
-    { category: google.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold: google.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE },
-  ];
-
-  // 4) логируем запрос (опционально)
-  const log = await prisma.aIRequestLog.create({
-    data: { userId, topicId, mode, lang, question: safeQuestion, prompt },
-  });
-
-  try {
-    const response = await ai.models.generateContent({
-      model,
-      contents: prompt,
-      config: {
-        safetySettings,
-        maxOutputTokens,
-        temperature,
-      },
-    });
-
-    // Safety: если candidate.finishReason === SAFETY, response.text будет пустым (cookbook) :contentReference[oaicite:6]{index=6}
-    const finishReason = response?.candidates?.[0]?.finishReason;
-    const text = response?.text || '';
-
-    const blocked = finishReason === 'SAFETY' || !text.trim();
-    const finalText = blocked ? getFallback(lang) : text;
-
-    await prisma.aIRequestLog.update({
-      where: { id: log.id },
-      data: { response: finalText, blocked },
-    });
-
-    // 5) учитываем для ачивки (AI_EXPLORER)
-    await recordAIRequest(userId);
-
-    return { answer: finalText, blocked };
-  } catch (e) {
-    await prisma.aIRequestLog.update({
-      where: { id: log.id },
-      data: { error: String(e?.message || e) },
-    });
-
-    // fallback при недоступности/ошибке
-    await recordAIRequest(userId);
-    return { answer: getFallback(lang), blocked: true, fallback: true };
-  }
+  return { answer: text, blocked: false };
 }
 
 module.exports = { help };
